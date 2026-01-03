@@ -4,116 +4,143 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>VR Magic Sandbox</title>
+
+    <!-- A-Frame -->
     <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
   </head>
 
   <body>
     <a-scene
-      webxr="optionalFeatures: local-floor, bounded-floor; overlayElement: #domOverlay;"
+      webxr="optionalFeatures: local-floor, bounded-floor"
       vr-mode-ui="enabled: true"
       background="color: #101018"
     >
+
       <!-- Lighting -->
       <a-entity light="type: ambient; intensity: 0.7"></a-entity>
-      <a-entity light="type: directional; intensity: 0.8" position="1 3 2"></a-entity>
+      <a-entity light="type: directional; intensity: 0.9" position="1 3 2"></a-entity>
 
       <!-- Player rig -->
       <a-entity id="rig" position="0 1.6 3">
-        <a-camera></a-camera>
+        <a-camera id="camera"></a-camera>
 
-        <!-- Controllers -->
         <a-entity id="leftHand"  laser-controls="hand: left"></a-entity>
         <a-entity id="rightHand" laser-controls="hand: right" spell-caster></a-entity>
       </a-entity>
 
       <!-- Ground -->
-      <a-plane rotation="-90 0 0" width="30" height="30" color="#202030"></a-plane>
+      <a-plane
+        rotation="-90 0 0"
+        width="30"
+        height="30"
+        color="#202030">
+      </a-plane>
 
       <!-- Targets -->
-      <a-box class="target" position="-1 1 -3" depth="0.5" height="0.5" width="0.5" color="#8844ff"></a-box>
-      <a-box class="target" position="0 1 -3"  depth="0.5" height="0.5" width="0.5" color="#8844ff"></a-box>
-      <a-box class="target" position="1 1 -3"  depth="0.5" height="0.5" width="0.5" color="#8844ff"></a-box>
+      <a-box class="target" position="-1 1 -3" color="#8844ff"></a-box>
+      <a-box class="target" position="0 1 -3"  color="#8844ff"></a-box>
+      <a-box class="target" position="1 1 -3"  color="#8844ff"></a-box>
 
-      <!-- Spell projectiles container -->
+      <!-- Container for spells -->
       <a-entity id="projectiles"></a-entity>
 
       <script>
-        // Simple "spell orb" projectile helper
-        function spawnOrb(pos, dir, speed = 8) {
+        /**********************
+         * PROJECTILE MOVEMENT
+         **********************/
+        AFRAME.registerComponent("projectile", {
+          schema: {
+            vx: { type: "number" },
+            vy: { type: "number" },
+            vz: { type: "number" },
+            lifeMs: { type: "number", default: 4000 }
+          },
+
+          init() {
+            this.age = 0;
+          },
+
+          tick(t, dt) {
+            const p = this.el.object3D.position;
+            const s = dt / 1000;
+
+            p.x += this.data.vx * s;
+            p.y += this.data.vy * s;
+            p.z += this.data.vz * s;
+
+            this.age += dt;
+            if (this.age > this.data.lifeMs) {
+              this.el.remove();
+            }
+          }
+        });
+
+        function spawnFireOrb(pos, dir, speed = 8) {
           const orb = document.createElement("a-sphere");
+
           orb.setAttribute("radius", "0.06");
-          orb.setAttribute("color", "#ff6a00");
+          orb.setAttribute("color", "#ff2a00");
           orb.setAttribute("position", `${pos.x} ${pos.y} ${pos.z}`);
 
-          const vel = { x: dir.x * speed, y: dir.y * speed, z: dir.z * speed };
-
-          orb.tick = function (t, dt) {
-            const p = orb.object3D.position;
-            const s = dt / 1000;
-            p.x += vel.x * s; p.y += vel.y * s; p.z += vel.z * s;
-
-            // Despawn if too far
-            if (p.length() > 60) orb.remove();
-          };
+          orb.setAttribute(
+            "projectile",
+            `vx:${dir.x * speed}; vy:${dir.y * speed}; vz:${dir.z * speed}`
+          );
 
           document.querySelector("#projectiles").appendChild(orb);
         }
 
-        // FIREBOLT: gesture = fast forward thrust + trigger press
+        /**********************
+         * SPELL CASTING LOGIC
+         **********************/
         AFRAME.registerComponent("spell-caster", {
           init() {
             this.lastPos = new THREE.Vector3();
             this.curPos  = new THREE.Vector3();
             this.vel     = new THREE.Vector3();
+
             this.triggerDown = false;
+            this.cooldown = 0;
 
-            // Quest controllers use standard selectstart/selectend in WebXR
-            this.el.addEventListener("triggerdown", () => (this.triggerDown = true));
-            this.el.addEventListener("triggerup",   () => (this.triggerDown = false));
+            this.el.addEventListener("triggerdown", () => this.triggerDown = true);
+            this.el.addEventListener("triggerup",   () => this.triggerDown = false);
 
-            // Fallback: some setups emit "selectstart/selectend"
-            this.el.addEventListener("selectstart", () => (this.triggerDown = true));
-            this.el.addEventListener("selectend",   () => (this.triggerDown = false));
+            this.el.addEventListener("selectstart", () => this.triggerDown = true);
+            this.el.addEventListener("selectend",   () => this.triggerDown = false);
 
             this.el.object3D.getWorldPosition(this.lastPos);
           },
 
           tick(t, dt) {
-            // Get velocity
+            // Velocity tracking
             this.el.object3D.getWorldPosition(this.curPos);
             this.vel.copy(this.curPos).sub(this.lastPos).multiplyScalar(1000 / Math.max(dt, 1));
             this.lastPos.copy(this.curPos);
 
-            // Forward thrust detection (in world space):
-            // In VR, "forward" is roughly negative Z from the hand.
-            const forwardSpeed = -this.vel.z; // negative z movement => forward
+            // Cooldown
+            this.cooldown = Math.max(0, this.cooldown - dt);
 
-            // Tune these thresholds later
-            const THRUST_SPEED = 2.2;  // meters/sec
-            const COOLDOWN_MS  = 220;
-            this._cd = this._cd || 0;
-            this._cd = Math.max(0, this._cd - dt);
+            // Detect forward thrust
+            const forwardSpeed = -this.vel.z;
+            const THRUST_SPEED = 2.2;
 
-            if (this.triggerDown && forwardSpeed > THRUST_SPEED && this._cd === 0) {
-              // Cast Firebolt
+            if (this.triggerDown && forwardSpeed > THRUST_SPEED && this.cooldown === 0) {
+
+              // Use CAMERA forward direction (Fix #2)
+              const cam = document.querySelector("#camera").object3D;
+              const dir = new THREE.Vector3();
+              cam.getWorldDirection(dir).normalize();
+
               const handPos = new THREE.Vector3();
-              const dir = new THREE.Vector3(0, 0, -1);
               this.el.object3D.getWorldPosition(handPos);
 
-              // Use hand's forward direction
-              const q = new THREE.Quaternion();
-              this.el.object3D.getWorldQuaternion(q);
-              dir.applyQuaternion(q).normalize();
-
-              spawnOrb(handPos, dir);
-              this._cd = COOLDOWN_MS;
+              spawnFireOrb(handPos, dir);
+              this.cooldown = 250; // ms
             }
           }
         });
       </script>
     </a-scene>
-
-    <!-- Optional DOM overlay hook (not required for v1) -->
-    <div id="domOverlay"></div>
   </body>
 </html>
+
